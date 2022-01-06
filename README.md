@@ -6,6 +6,8 @@ Great toy for boring meetings :)
 
 [Try it out!](https://raw.githack.com/pachacamac/procedural_plants/main/index.html)
 
+![Screenshot](https://github.com/pachacamac/procedural_plants/blob/main/screenshot.png?raw=true)
+
 ## Usage
 
 * Open in browser
