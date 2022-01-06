@@ -1,0 +1,397 @@
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  canvas{width:100%;height:100%}
+  .btn{position:absolute;z-index:99;background:#111;color:#eee;padding:2px;width:28px; height:28px;}
+  #reload-btn{left:0;top:0;}
+  #load-creature-btn{left:30;top:0;}
+  #load-previous-btn{left:60;top:0;}
+  .hidden{display:none;visibility:hidden;}
+  @keyframes anim {
+    0% {background-position: -500%;}
+    100%{background-position: 500%;}
+  }
+  .txtanim{
+    background: linear-gradient(90deg, #000, #fff, #000);
+    background-repeat: no-repeat;
+    background-size: 80%;
+    animation: anim 1s linear infinite;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: rgba(255, 255, 255, 0);
+  }
+  #msg{z-index:99;position:absolute;top:0;left:45%;text-align:center;color:#eee;font-size:1.5em;}
+</style>
+</head>
+<body>
+<canvas id="can" style="background:#111;"></canvas>
+<button id="reload-btn" class="btn" title="new seed">🔃</button>
+<button id="load-creature-btn" class="btn" title="load">💾</button>
+<button id="load-previous-btn" class="btn" title="undo">↶</button>
+<div id="msg" class="hidden">...breeding...</div>
+<script>
+var can = document.getElementById('can')
+var ctx = can.getContext("2d");
+can.width = window.innerWidth;
+can.height = window.innerHeight;
+ctx.clearRect(0, 0, can.width, can.height);
+
+// Mulberry32, a fast high quality PRNG: https://gist.github.com/tommyettinger/46a874533244883189143505d203312c
+// Better 32-bit integer hash function: https://burtleburtle.net/bob/hash/integer.html
+const mb32=s=>t=>(s=s+1831565813|0,t=Math.imul(s^s>>>15,1|s),t=t+Math.imul(t^t>>>7,61|t)^t,(t^t>>>14)>>>0)/2**32;
+const hash=n=>(n=61^n^n>>>16,n+=n<<3,n=Math.imul(n,668265261),n^=n>>>15)>>>0;
+let seedint;
+if(window.location.hash==''){
+  seedint = Math.floor(Math.random() * 99999999)
+  window.location.hash = '#'+seedint;
+}else{
+  seedint = parseInt(window.location.hash.slice(1))
+}
+console.log(seedint)
+
+const SEED = hash(seedint)//hash(Math.floor(Math.random()*100000)) //hash(1234567);
+let RAND = mb32(SEED);
+//let RAND = Math.random;
+
+const frnd = (mi,ma=0) => { if(ma<=mi){[ma,mi]=[mi,ma]}; return RAND()*(ma-mi)+mi };
+const irnd = (mi,ma=0) => Math.floor(rnd(Math.ceil(mi), Math.floor(ma)+1));
+const rnd = frnd;
+
+let FREERAND = mb32(hash(Math.floor(Math.random()*100000)))
+const freefrnd = (mi,ma=0) => { if(ma<=mi){[ma,mi]=[mi,ma]}; return FREERAND()*(ma-mi)+mi };
+const freeirnd = (mi,ma=0) => Math.floor(freefrnd(Math.ceil(mi), Math.floor(ma)+1));
+
+const clamp = (v, mi, ma) => Math.min(Math.max(v, mi), ma);
+
+class Nucleotide {
+  constructor(min, max, rnd, val){
+    this.min = min;
+    this.max = max;
+    this.rnd = rnd;
+    this.val = val || this.rnd(min, max);
+  }
+  mutate(){ this.val = this.rnd(this.min, this.max); return this }
+  nudge(f=0.1){ const r = (this.max - this.min) * f; this.val = clamp(this.val + this.rnd(-r*0.5, r*0.5), this.min, this.max); return this }
+  mix(other){
+    let mi = 0.5 * (this.min + other.min)
+    let ma = 0.5 * (this.max + other.max)
+    let va = 0.5 * (this.val + other.val)
+    if(this.rnd == irnd){
+      mi = Math.round(mi)
+      ma = Math.round(ma)
+      va = Math.round(va)
+    }
+    return new Nucleotide(mi, ma, this.rnd, va) }
+  toJSON(){
+    return JSON.stringify({min: this.min, max: this.max, rnd: this.rnd == irnd || this.rnd == freeirnd ? 'irnd' : 'frnd', val: this.val})
+  }
+  static fromJSON(j){
+    j = typeof j === 'object' ? j : JSON.parse(j)
+    return new Nucleotide(j.min, j.max, j.rnd=='irnd' ? irnd : frnd, j.val)
+  }
+  copy(){ return new Nucleotide(this.min, this.max, this.rnd, this.val) }
+}
+
+class DNA {
+  constructor(species, pairs){
+    this.species = species
+    this.pairs = Array.isArray(pairs) ? pairs : Object.entries(pairs)
+  }
+  get object(){ return Object.fromEntries(this.pairs.map(([k,v])=>[k,v.val])) }
+  get length(){ return this.pairs.length }
+  mutate(){ this.pairs[irnd(0, this.length-1)][1].mutate(); return this }
+  nudge(f=0.1){ this.pairs[irnd(0, this.length-1)][1].nudge(f); return this }
+  mix(other){
+    const a = this.pairs.slice()
+    const b = other.pairs.slice()
+    const m = a.map(([k,v],i)=>[k, v.mix(b[i][1])])
+    return new DNA(this.species, m)
+  }
+  //https://en.wikipedia.org/wiki/Crossover_(genetic_algorithm)
+  crossover1(other){
+    //const cp = irnd(1, this.length-2)
+    const cp = irnd(0, this.length-1)
+    return [
+      new DNA(this.species, this.pairs.slice(0,cp).concat(other.pairs.slice(cp)).map(([k,v])=>[k, v.copy()])),
+      new DNA(this.species, other.pairs.slice(0,cp).concat(this.pairs.slice(cp)).map(([k,v])=>[k, v.copy()]))
+    ]
+  }
+  crossover2(other){
+    const cp1 = [], cp2 = []
+    for(let i=0;i<this.pairs.length;i++){
+      const [tk,tv] = this.pairs[i], [ok,ov] = other.pairs[i]
+      if(irnd(0, 1)==0){
+        cp1.push([tk, tv.copy()])
+        cp2.push([ok, ov.copy()])
+      }else{
+        cp2.push([tk, tv.copy()])
+        cp1.push([ok, ov.copy()])
+      }
+    }
+    return [new DNA(this.species, cp1), new DNA(this.species, cp2)]
+  }
+  copy(){ return new DNA(this.species, this.pairs.map(([k,v])=>[k, v.copy()])) }
+  toJSON(){
+    let pairs = this.pairs.map(([k,v])=>[k, v.toJSON()]);
+    pairs.sort((a,b)=>a[0]<=b[0])
+    return JSON.stringify({species: this.species, pairs: pairs })
+  }
+  static fromJSON(j){
+    j = typeof j === 'object' ? j : JSON.parse(j)
+    return new DNA(j.species, j.pairs.map(([k,v])=>[k, Nucleotide.fromJSON(v)]))
+  }
+}
+
+function branch(p){
+  p.maxSteps = p.maxSteps || p.recursions
+  p.growthStage = 1 - p.recursions / p.maxSteps
+  const bcosp = Math.cos((p.bearing+90) * Math.PI / 180)  // TODO: parametrize?
+  const bsinp = Math.sin((p.bearing+90) * Math.PI / 180)  // TODO: parametrize?
+  const bcosm = Math.cos((p.bearing-90) * Math.PI / 180)  // TODO: parametrize?
+  const bsinm = Math.sin((p.bearing-90) * Math.PI / 180)  // TODO: parametrize?
+  const x1 = p.x + (p.baseWidth*0.5) * bcosp  // TODO: parametrize?
+  const y1 = p.y + (p.baseWidth*0.5) * bsinp  // TODO: parametrize?
+  const x2 = p.x + (p.baseWidth*0.5) * bcosm  // TODO: parametrize?
+  const y2 = p.y + (p.baseWidth*0.5) * bsinm  // TODO: parametrize?
+  const nx = p.x + p.branchLength * Math.cos(p.bearing * Math.PI / 180)
+  const ny = p.y + p.branchLength * Math.sin(p.bearing * Math.PI / 180)
+  const x3 = nx + (p.baseWidth*0.5*p.tapering) * bcosm  // TODO: parametrize?
+  const y3 = ny + (p.baseWidth*0.5*p.tapering) * bsinm  // TODO: parametrize?
+  const x4 = nx + (p.baseWidth*0.5*p.tapering) * bcosp  // TODO: parametrize?
+  const y4 = ny + (p.baseWidth*0.5*p.tapering) * bsinp  // TODO: parametrize?
+  ctx.fillStyle = `hsl(${p.colorH},${p.colorS}%,${p.colorL}%)`
+  ctx.beginPath()
+  ctx.moveTo(x1, y1)
+  ctx.lineTo(x2, y2)
+  ctx.lineTo(x3, y3)
+  ctx.lineTo(x4, y4)
+  ctx.closePath()
+  ctx.fill()
+  if(p.recursions>0){
+    for(let j=0; j<irnd(p.branchingMin, p.branchingMax); j++){
+      const np = {...p}
+      np.x = nx
+      np.y = ny
+      np.recursions -= 1
+      np.baseWidth *= rnd(p.baseWidthChangeMin, p.baseWidthChangeMax)//rnd(0.3, 2.5 * (1/p.recursions))
+      np.bearing += rnd(p.bearingChangeMin, p.bearingChangeMax) //rnd(-50,50)
+      np.branchLength *= rnd(p.branchLengthChangeMin, p.branchLengthChangeMax) //rnd(0.6,0.9)
+      np.colorH += clamp(0, 360, rnd(p.colorHChangeMin, p.colorHChangeMax))
+      //np.colorH = clamp(0, 360, Math.round(np.colorH * (np.growthStage < np.growthStageDivider ? np.colorHGrowthStageChange : 1)))
+      //if(np.growthStage > 0.66) np.colorH = Math.round(np.colorH / 2)
+      np.colorS += clamp(0, 100, rnd(p.colorSChangeMin, p.colorSChangeMax))
+      np.colorL += clamp(0, 100, rnd(p.colorLChangeMin, p.colorLChangeMax))
+      np.tapering *= np.growthStage > np.growthStageDivider ? np.taperingGrowthStageChange : 1
+      branch(np)
+    }
+  }
+}
+
+function write(pos, text, font){
+  ctx.font = font || "12px Arial";
+  ctx.fillStyle = 'white'
+  ctx.fillText(text, pos.x, pos.y);
+}
+
+const parents = [
+  new DNA('Tree', {
+    recursions: new Nucleotide(3, 7, irnd, 6),
+    growthStageDivider: new Nucleotide(0, 1, frnd, 0.85),
+    baseWidth: new Nucleotide(2, 100, irnd, 30),
+    bearing: new Nucleotide(250, 290, irnd, 270),
+    branchLength: new Nucleotide(10, 90, irnd, 40),
+    tapering: new Nucleotide(-0.9, 0.9, frnd, 1),
+    colorH: new Nucleotide(0, 360, frnd, 21),
+    colorS: new Nucleotide(0, 100, frnd, 54),
+    colorL: new Nucleotide(0, 100, frnd, 35),
+    branchingMin: new Nucleotide(1, 6, irnd, 1),
+    branchingMax: new Nucleotide(1, 6, irnd, 5),
+    colorHChangeMin: new Nucleotide(-40, 0, irnd, -10),
+    colorHChangeMax: new Nucleotide(0, 40, irnd, 10),
+    colorSChangeMin: new Nucleotide(-20, 0, irnd, -10),
+    colorSChangeMax: new Nucleotide(0, 20, irnd, 10),
+    colorLChangeMin: new Nucleotide(-20, 0, irnd, -10),
+    colorLChangeMax: new Nucleotide(0, 20, irnd, 10),
+    baseWidthChangeMin: new Nucleotide(0.1, 1, irnd, 0.2),
+    baseWidthChangeMax: new Nucleotide(0.1, 1, irnd, 0.8),
+    bearingChangeMin: new Nucleotide(-50, 0, frnd, -50),
+    bearingChangeMax: new Nucleotide(0, 50, frnd, 50),
+    branchLengthChangeMin: new Nucleotide(0.1, 1, irnd, 0.6),
+    branchLengthChangeMax: new Nucleotide(0.1, 1, irnd, 0.9),
+    taperingGrowthStageChange: new Nucleotide(-1, 1, frnd, 0),
+    colorHGrowthStageChange: new Nucleotide(-1, 1, frnd, 0.2)
+  }),
+  new DNA('Tree', {
+    recursions: new Nucleotide(3, 7, irnd, 7),
+    growthStageDivider: new Nucleotide(0, 1, frnd, 0.3),
+    baseWidth: new Nucleotide(5, 80, irnd, 64),
+    bearing: new Nucleotide(250, 290, irnd, 282),
+    branchLength: new Nucleotide(10, 90, irnd, 39),
+    tapering: new Nucleotide(-0.9, 0.9, frnd, 0.5),
+    colorH: new Nucleotide(0, 360, frnd, 107),
+    colorS: new Nucleotide(0, 100, frnd, 54),
+    colorL: new Nucleotide(0, 100, frnd, 35),
+    branchingMin: new Nucleotide(1, 6, irnd, 1),
+    branchingMax: new Nucleotide(1, 6, irnd, 5),
+    colorHChangeMin: new Nucleotide(-40, 0, irnd, -10),
+    colorHChangeMax: new Nucleotide(0, 40, irnd, 10),
+    colorSChangeMin: new Nucleotide(-20, 0, irnd, -10),
+    colorSChangeMax: new Nucleotide(0, 20, irnd, 10),
+    colorLChangeMin: new Nucleotide(-20, 0, irnd, -10),
+    colorLChangeMax: new Nucleotide(0, 20, irnd, 10),
+    baseWidthChangeMin: new Nucleotide(0.1, 1, irnd, 0.2),
+    baseWidthChangeMax: new Nucleotide(0.1, 1, irnd, 0.8),
+    bearingChangeMin: new Nucleotide(-50, 0, frnd, -50),
+    bearingChangeMax: new Nucleotide(0, 50, frnd, 50),
+    branchLengthChangeMin: new Nucleotide(0.1, 1, irnd, 0.6),
+    branchLengthChangeMax: new Nucleotide(0.1, 1, irnd, 0.9),
+    taperingGrowthStageChange: new Nucleotide(-1, 1, frnd, 0.5),
+    colorHGrowthStageChange: new Nucleotide(-1, 1, frnd, -0.7)
+  })
+];
+
+const previousParents = [];
+
+function buildPopulation(dnas){
+  //RAND = mb32(SEED)
+  if(dnas.length == 1) dnas.push(dnas[0]);
+  console.log('building new population')
+  const children = dnas[0].crossover2(dnas[1])
+  //const grandchildren = children[0].crossover1(children[1])
+  const experiments = dnas[0].crossover1(dnas[1])
+  const childExperiments = children[0].crossover2(children[1])
+  for(var i=0;i<10;i++){
+    experiments[0].nudge(0.5)
+    experiments[1].mutate()
+    childExperiments[0].nudge(0.5)
+    childExperiments[1].mutate()
+  }
+  const randos = []
+  for(var i=0;i<2;i++){
+    randos.push(new DNA('Tree', {
+      recursions: new Nucleotide(3, 7, freeirnd),
+      growthStageDivider: new Nucleotide(0, 1, freefrnd),
+      baseWidth: new Nucleotide(5, 80, freeirnd),
+      bearing: new Nucleotide(250, 290, freeirnd),
+      branchLength: new Nucleotide(10, 90, freeirnd),
+      tapering: new Nucleotide(-0.9, 0.9, freefrnd),
+      colorH: new Nucleotide(0, 360, freefrnd),
+      colorS: new Nucleotide(0, 100, freefrnd),
+      colorL: new Nucleotide(0, 100, freefrnd),
+      branchingMin: new Nucleotide(1, 6, freeirnd),
+      branchingMax: new Nucleotide(1, 6, freeirnd),
+      colorHChangeMin: new Nucleotide(-40, 0, freeirnd),
+      colorHChangeMax: new Nucleotide(0, 40, freeirnd),
+      colorSChangeMin: new Nucleotide(-20, 0, freeirnd),
+      colorSChangeMax: new Nucleotide(0, 20, freeirnd),
+      colorLChangeMin: new Nucleotide(-20, 0, freeirnd),
+      colorLChangeMax: new Nucleotide(0, 20, freeirnd),
+      baseWidthChangeMin: new Nucleotide(0.1, 1, freeirnd),
+      baseWidthChangeMax: new Nucleotide(0.1, 1, freeirnd),
+      bearingChangeMin: new Nucleotide(-50, 0, freefrnd),
+      bearingChangeMax: new Nucleotide(0, 50, freefrnd),
+      branchLengthChangeMin: new Nucleotide(0.1, 1, freeirnd),
+      branchLengthChangeMax: new Nucleotide(0.1, 1, freeirnd),
+      taperingGrowthStageChange: new Nucleotide(-1, 1, freefrnd),
+      colorHGrowthStageChange: new Nucleotide(-1, 1, freefrnd)
+    }))
+  }
+  const population = [
+    ['Parent 1', dnas[0]],
+    ['Parent 2', dnas[1]],
+    ['Child 1', children[0]],
+    ['Child 2', children[1]],
+    //['Child 3', grandchildren[0].nudge(0.25)],
+    //['Child 4', grandchildren[1].nudge(0.25)],
+    ['ParentMix', dnas[0].mix(dnas[1])],
+    ['ChildMix', children[0].mix(children[1])],
+    ['Exp. Nudge', experiments[0]],
+    ['Exp. Mutate', experiments[1]],
+    ['CExp. Nudge', childExperiments[0]],
+    ['CExp. Mutate', childExperiments[1]],
+    ['Rando 1', randos[0]],
+    ['Rando 2', randos[1]],
+  ]
+  const pos = {x: can.width * 0.1, y: can.height * 0.90}
+  const xstep = can.width * 0.16;
+  const ystep = can.height * 0.5;
+  ctx.clearRect(0, 0, can.width, can.height);
+  population.forEach(([k,v],i)=>{
+    console.log(k, v.toJSON()) //Object.values(v.object).map(e=>parseFloat(e.toFixed(1)))
+    branch({...v.object, ...pos})
+    write({...pos, ...{x: pos.x-20, y: pos.y+20}}, k)
+
+    var btn = document.createElement("button");
+    btn.innerText = '💕'
+    btn.title = 'breed'
+    btn.className = 'btn';
+    btn.setAttribute("style", `position:absolute; left: ${pos.x-20}px; top: ${pos.y+25}px;`);
+    btn.dataset.dna = v.toJSON();
+    btn.onclick = function(event){
+      parents.push(DNA.fromJSON(event.target.dataset.dna))
+      //console.log( Object.values(DNA.fromJSON(event.target.dataset.dna).object).map(e=>parseFloat(e.toFixed(1))) )
+      if(parents.length == 2){
+        previousParents.push(parents[0].copy())
+        previousParents.push(parents[1].copy())
+        document.getElementById('msg').classList.toggle('hidden')
+        setTimeout(function(){ buildPopulation(parents); document.getElementById('msg').classList.toggle('hidden')}, 20)
+      }
+    }
+    document.body.appendChild(btn);
+
+    var btn = document.createElement("button");
+    btn.innerText = '💾'
+    btn.title = 'save'
+    btn.className = 'btn';
+    btn.setAttribute("style", `position:absolute; left: ${pos.x+10}px; top: ${pos.y+25}px;`);
+    btn.dataset.dna = v.toJSON();
+    btn.onclick = function(event){
+      if(localStorage.getItem('creatures')==undefined){ localStorage.setItem('creatures', '{}') }
+      let name = prompt('What would you like to call this creature?', k+' '+Date.now())
+      if(name){
+        let creatures = JSON.parse(localStorage.getItem('creatures'))
+        creatures[name] = JSON.parse(event.target.dataset.dna)
+        localStorage.setItem('creatures', JSON.stringify(creatures))
+      }
+    }
+    document.body.appendChild(btn);
+
+
+    if(i%2==1) pos.x += xstep
+    pos.y += ystep * (i%2==0 ? -1 : 1)
+  })
+  parents.splice(0, parents.length)
+}
+
+buildPopulation(parents)
+
+document.getElementById('reload-btn').onclick = function(event){ document.location.hash=''; document.location.reload() }
+document.getElementById('load-creature-btn').onclick = function(event){
+  let creatures = JSON.parse(localStorage.getItem('creatures')||'{}')
+  let names = Object.keys(creatures)
+  let name = prompt(names.join("\n"), names[names.length-1])
+  if(name && creatures[name]){
+    parents.splice(0, parents.length)
+    parents.push(DNA.fromJSON(creatures[name]))
+    parents.push(DNA.fromJSON(creatures[name]))
+    document.getElementById('msg').classList.toggle('hidden')
+    setTimeout(function(){ buildPopulation(parents); document.getElementById('msg').classList.toggle('hidden')}, 20)
+  }
+}
+document.getElementById('load-previous-btn').onclick = function(event){
+  console.log(previousParents)
+  if(previousParents.length == 0){
+    alert('no previous generation')
+    return
+  }
+  parents.splice(0, parents.length)
+  parents.push(previousParents.pop())
+  parents.push(previousParents.pop())
+  document.getElementById('msg').classList.toggle('hidden')
+  setTimeout(function(){ buildPopulation(parents); document.getElementById('msg').classList.toggle('hidden')}, 20)
+}
+</script>
+</body>
+</html>
