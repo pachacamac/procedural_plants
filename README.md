@@ -4,6 +4,8 @@ Breed procedurally generated plants based on their DNA
 
 Great toy for boring meetings :)
 
+[Try it out!](https://raw.githack.com/pachacamac/procedural_plants/main/index.html)
+
 ## Usage
 
 * Open in browser
